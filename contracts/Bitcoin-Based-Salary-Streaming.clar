@@ -7,11 +7,16 @@
 (define-constant ERR_STREAM_NOT_ACTIVE (err u410))
 (define-constant ERR_STREAM_ALREADY_STOPPED (err u411))
 (define-constant ERR_FUTURE_START_TIME (err u412))
+(define-constant ERR_ADJUSTMENT_NOT_FOUND (err u413))
+(define-constant ERR_ADJUSTMENT_ALREADY_PROCESSED (err u414))
+(define-constant ERR_ADJUSTMENT_EXPIRED (err u415))
+(define-constant ERR_INVALID_ADJUSTMENT (err u416))
 
 (define-constant PRECISION u1000000)
 (define-constant SECONDS_PER_BLOCK u600)
 
 (define-data-var next-stream-id uint u1)
+(define-data-var next-adjustment-id uint u1)
 
 (define-map streams
   uint
@@ -31,6 +36,25 @@
 (define-map employee-streams principal (list 100 uint))
 
 (define-map stream-balances uint uint)
+
+(define-map salary-adjustments
+  uint
+  {
+    stream-id: uint,
+    old-rate: uint,
+    new-rate: uint,
+    adjustment-type: (string-ascii 20),
+    proposed-by: principal,
+    proposed-at: uint,
+    expires-at: uint,
+    approved: bool,
+    processed: bool,
+    effective-time: (optional uint),
+    reason: (string-ascii 100)
+  }
+)
+
+(define-map stream-adjustments uint (list 50 uint))
 
 (define-private (get-current-time)
   (unwrap-panic (get-stacks-block-info? time (- stacks-block-height u1)))
@@ -198,6 +222,104 @@
   )
 )
 
+(define-public (propose-salary-adjustment 
+  (stream-id uint)
+  (new-rate uint)
+  (adjustment-type (string-ascii 20))
+  (reason (string-ascii 100))
+  (validity-days uint))
+  (let (
+    (stream-data (unwrap! (map-get? streams stream-id) ERR_NOT_FOUND))
+    (adjustment-id (var-get next-adjustment-id))
+    (current-time (get-current-time))
+    (current-adjustments (default-to (list) (map-get? stream-adjustments stream-id)))
+  )
+    (asserts! (is-eq tx-sender (get employer stream-data)) ERR_UNAUTHORIZED)
+    (asserts! (get is-active stream-data) ERR_STREAM_NOT_ACTIVE)
+    (asserts! (> new-rate u0) ERR_INVALID_AMOUNT)
+    (asserts! (> validity-days u0) ERR_INVALID_ADJUSTMENT)
+    
+    (map-set salary-adjustments adjustment-id {
+      stream-id: stream-id,
+      old-rate: (get salary-rate stream-data),
+      new-rate: new-rate,
+      adjustment-type: adjustment-type,
+      proposed-by: tx-sender,
+      proposed-at: current-time,
+      expires-at: (+ current-time (* validity-days u86400)),
+      approved: false,
+      processed: false,
+      effective-time: none,
+      reason: reason
+    })
+    
+    (map-set stream-adjustments stream-id 
+      (unwrap-panic (as-max-len? (append current-adjustments adjustment-id) u50)))
+    
+    (var-set next-adjustment-id (+ adjustment-id u1))
+    (ok adjustment-id)
+  )
+)
+
+(define-public (approve-salary-adjustment (adjustment-id uint))
+  (let (
+    (adjustment (unwrap! (map-get? salary-adjustments adjustment-id) ERR_ADJUSTMENT_NOT_FOUND))
+    (stream-data (unwrap! (map-get? streams (get stream-id adjustment)) ERR_NOT_FOUND))
+    (current-time (get-current-time))
+  )
+    (asserts! (is-eq tx-sender (get employee stream-data)) ERR_UNAUTHORIZED)
+    (asserts! (not (get processed adjustment)) ERR_ADJUSTMENT_ALREADY_PROCESSED)
+    (asserts! (< current-time (get expires-at adjustment)) ERR_ADJUSTMENT_EXPIRED)
+    
+    (map-set salary-adjustments adjustment-id 
+      (merge adjustment { 
+        approved: true,
+        processed: true,
+        effective-time: (some current-time)
+      }))
+    
+    (map-set streams (get stream-id adjustment) 
+      (merge stream-data { salary-rate: (get new-rate adjustment) }))
+    
+    (ok true)
+  )
+)
+
+(define-public (reject-salary-adjustment (adjustment-id uint))
+  (let (
+    (adjustment (unwrap! (map-get? salary-adjustments adjustment-id) ERR_ADJUSTMENT_NOT_FOUND))
+    (stream-data (unwrap! (map-get? streams (get stream-id adjustment)) ERR_NOT_FOUND))
+    (current-time (get-current-time))
+  )
+    (asserts! (is-eq tx-sender (get employee stream-data)) ERR_UNAUTHORIZED)
+    (asserts! (not (get processed adjustment)) ERR_ADJUSTMENT_ALREADY_PROCESSED)
+    (asserts! (< current-time (get expires-at adjustment)) ERR_ADJUSTMENT_EXPIRED)
+    
+    (map-set salary-adjustments adjustment-id 
+      (merge adjustment { 
+        approved: false,
+        processed: true
+      }))
+    
+    (ok true)
+  )
+)
+
+(define-public (cancel-salary-adjustment (adjustment-id uint))
+  (let (
+    (adjustment (unwrap! (map-get? salary-adjustments adjustment-id) ERR_ADJUSTMENT_NOT_FOUND))
+    (stream-data (unwrap! (map-get? streams (get stream-id adjustment)) ERR_NOT_FOUND))
+  )
+    (asserts! (is-eq tx-sender (get employer stream-data)) ERR_UNAUTHORIZED)
+    (asserts! (not (get processed adjustment)) ERR_ADJUSTMENT_ALREADY_PROCESSED)
+    
+    (map-set salary-adjustments adjustment-id 
+      (merge adjustment { processed: true }))
+    
+    (ok true)
+  )
+)
+
 (define-read-only (get-stream (stream-id uint))
   (map-get? streams stream-id)
 )
@@ -233,4 +355,65 @@
 
 (define-read-only (get-next-stream-id)
   (var-get next-stream-id)
+)
+
+(define-read-only (get-salary-adjustment (adjustment-id uint))
+  (map-get? salary-adjustments adjustment-id)
+)
+
+(define-read-only (get-stream-adjustments (stream-id uint))
+  (map-get? stream-adjustments stream-id)
+)
+
+(define-read-only (get-pending-adjustments (stream-id uint))
+  (let (
+    (adjustments (default-to (list) (map-get? stream-adjustments stream-id)))
+    (current-time (get-current-time))
+  )
+    (filter is-pending-adjustment adjustments)
+  )
+)
+
+(define-private (is-pending-adjustment (adjustment-id uint))
+  (match (map-get? salary-adjustments adjustment-id)
+    adjustment (and 
+      (not (get processed adjustment))
+      (< (get-current-time) (get expires-at adjustment))
+    )
+    false
+  )
+)
+
+(define-read-only (get-adjustment-history (stream-id uint))
+  (let (
+    (adjustments (default-to (list) (map-get? stream-adjustments stream-id)))
+  )
+    (map get-adjustment-details adjustments)
+  )
+)
+
+(define-private (get-adjustment-details (adjustment-id uint))
+  (map-get? salary-adjustments adjustment-id)
+)
+
+(define-read-only (calculate-salary-change-percentage (adjustment-id uint))
+  (match (map-get? salary-adjustments adjustment-id)
+    adjustment (let (
+      (old-rate (get old-rate adjustment))
+      (new-rate (get new-rate adjustment))
+      (change (* (if (> new-rate old-rate) 
+                   (- new-rate old-rate) 
+                   (- old-rate new-rate)) u10000))
+    )
+      (if (> old-rate u0)
+        (ok (/ change old-rate))
+        ERR_INVALID_ADJUSTMENT
+      )
+    )
+    ERR_ADJUSTMENT_NOT_FOUND
+  )
+)
+
+(define-read-only (get-next-adjustment-id)
+  (var-get next-adjustment-id)
 )
