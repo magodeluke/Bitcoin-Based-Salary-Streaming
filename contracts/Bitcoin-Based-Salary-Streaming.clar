@@ -37,6 +37,8 @@
 
 (define-map stream-balances uint uint)
 
+(define-map stream-beneficiaries uint principal)
+
 (define-map salary-adjustments
   uint
   {
@@ -156,12 +158,16 @@
     (stream-data (unwrap! (map-get? streams stream-id) ERR_NOT_FOUND))
     (withdrawable-amount (unwrap! (get-withdrawable-amount stream-id) ERR_NOT_FOUND))
     (current-balance (default-to u0 (map-get? stream-balances stream-id)))
+    (maybe-beneficiary (map-get? stream-beneficiaries stream-id))
+    (authorized (or (is-eq tx-sender (get employee stream-data))
+                    (match maybe-beneficiary b (is-eq tx-sender b) false)))
+    (payout (default-to (get employee stream-data) maybe-beneficiary))
   )
-    (asserts! (is-eq tx-sender (get employee stream-data)) ERR_UNAUTHORIZED)
+    (asserts! authorized ERR_UNAUTHORIZED)
     (asserts! (get is-active stream-data) ERR_STREAM_NOT_ACTIVE)
     (asserts! (> withdrawable-amount u0) ERR_INSUFFICIENT_FUNDS)
     
-    (try! (as-contract (stx-transfer? withdrawable-amount tx-sender (get employee stream-data))))
+    (try! (stx-transfer? withdrawable-amount (as-contract tx-sender) payout))
     
     (map-set streams stream-id 
       (merge stream-data { 
@@ -190,6 +196,20 @@
   )
 )
 
+(define-public (set-stream-beneficiary (stream-id uint) (beneficiary (optional principal)))
+  (let ((stream-data (unwrap! (map-get? streams stream-id) ERR_NOT_FOUND)))
+    (asserts! (is-eq tx-sender (get employee stream-data)) ERR_UNAUTHORIZED)
+    (if (is-some beneficiary)
+      (begin
+        (map-set stream-beneficiaries stream-id (unwrap-panic beneficiary))
+        (ok true))
+      (begin
+        (map-delete stream-beneficiaries stream-id)
+        (ok true))
+    )
+  )
+)
+
 (define-public (emergency-withdraw (stream-id uint))
   (let (
     (stream-data (unwrap! (map-get? streams stream-id) ERR_NOT_FOUND))
@@ -205,11 +225,11 @@
     (asserts! (not (get is-active stream-data)) ERR_STREAM_ALREADY_STOPPED)
     
     (if (> employee-owed u0)
-      (try! (as-contract (stx-transfer? employee-owed tx-sender (get employee stream-data))))
+      (try! (stx-transfer? employee-owed (as-contract tx-sender) (get employee stream-data)))
       true)
     
     (if (> employer-refund u0)
-      (try! (as-contract (stx-transfer? employer-refund tx-sender (get employer stream-data))))
+      (try! (stx-transfer? employer-refund (as-contract tx-sender) (get employer stream-data)))
       true)
     
     (map-set streams stream-id 
@@ -334,6 +354,10 @@
 
 (define-read-only (get-employee-streams (employee principal))
   (map-get? employee-streams employee)
+)
+
+(define-read-only (get-stream-beneficiary (stream-id uint))
+  (map-get? stream-beneficiaries stream-id)
 )
 
 (define-read-only (get-stream-status (stream-id uint))

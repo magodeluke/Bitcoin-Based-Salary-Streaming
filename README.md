@@ -14,6 +14,8 @@ This smart contract enables employers to stream salaries to employees in real-ti
 - 🛑 **Stream control**: Employers can stop streams and handle emergencies
 - 📊 **Status tracking**: Monitor earnings, balances, and withdrawals
 - 🔍 **Multi-stream support**: Handle multiple salary streams per user
+- 🎯 **Delegated withdrawals**: Set beneficiaries for automated or emergency access
+- 📝 **Salary adjustments**: Propose and approve salary rate changes
 
 ## 🎯 Core Functions
 
@@ -51,6 +53,14 @@ Withdraw earned salary from a stream
 (withdraw-salary stream-id)
 ```
 
+#### `set-stream-beneficiary`
+Designate a beneficiary who can withdraw on your behalf
+```clarity
+(set-stream-beneficiary stream-id (some beneficiary-principal))
+;; Remove beneficiary
+(set-stream-beneficiary stream-id none)
+```
+
 ### Read-Only Functions
 
 #### `get-withdrawable-amount`
@@ -63,6 +73,12 @@ Check how much can be withdrawn from a stream
 Get complete information about a stream
 ```clarity
 (get-stream-status stream-id)
+```
+
+#### `get-stream-beneficiary`
+Check if a stream has a designated beneficiary
+```clarity
+(get-stream-beneficiary stream-id)
 ```
 
 ## 📖 Usage Examples
@@ -96,6 +112,13 @@ Get complete information about a stream
 (fund-stream u1 u500000000)
 ```
 
+### 5. 🎯 Employee Sets Beneficiary
+
+```clarity
+;; Designate a beneficiary for automated withdrawals
+(set-stream-beneficiary u1 (some 'SP3FBR2AGK5H9QBDH3EEN6DF8EK8JY7RX8QJ5SVTE))
+```
+
 ## 🔧 Technical Details
 
 - **Precision**: Uses microsecond precision for salary calculations
@@ -125,9 +148,10 @@ clarinet test
 ## 🔐 Security Features
 
 - Only employers can create and fund streams
-- Only employees can withdraw from their streams
+- Employees and designated beneficiaries can withdraw from streams
 - Automatic balance tracking prevents double-spending
 - Emergency functions for dispute resolution
+- Employees maintain full control over beneficiary designations
 
 ## 📊 Error Codes
 
@@ -140,7 +164,11 @@ clarinet test
 | 409  | Stream already exists |
 | 410  | Stream not active |
 | 411  | Stream already stopped |
-| 412  | Future start time invalid |
+|| 412  | Future start time invalid |
+|| 413  | Adjustment not found |
+|| 414  | Adjustment already processed |
+|| 415  | Adjustment expired |
+|| 416  | Invalid adjustment |
 
 ## 🚀 Deployment
 
@@ -161,6 +189,8 @@ clarinet deploy --mainnet
 - 🎮 **Gaming rewards**: Stream tokens to players based on playtime
 - 📚 **Educational stipends**: Pay students for learning time
 - 🔬 **Research grants**: Distribute funding over time periods
+- 💼 **Automated treasury**: Route salary to smart contracts for automatic processing
+- 🚨 **Emergency access**: Designate trusted contacts for fund access
 
 ## 🤝 Contributing
 
